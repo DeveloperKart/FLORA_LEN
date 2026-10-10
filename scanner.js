@@ -13,47 +13,41 @@ const startBtn = document.getElementById("startBtn");
 const stopBtn = document.getElementById("stopBtn");
 const voiceBtn = document.getElementById("voiceBtn");
 
-// Information displayed for each supported class.
-// Voice output will NEVER read these descriptions aloud.
 const classInfo = {
     "tulsi": {
-        type: "plant",
+        type: "medicinal",
         benefits: [
-            "Traditionally used in herbal preparations for coughs and colds.",
-            "Tulsi contains plant compounds that have shown antioxidant activity in laboratory studies."
-        ],
-        fact: "Tulsi is also known as holy basil and is commonly grown in Indian homes."
+            "Benefit 1: Tulsi leaves are traditionally used in herbal preparations for coughs and colds, although evidence for treating these conditions is limited.",
+            "Benefit 2: Tulsi contains plant compounds with antioxidant activity demonstrated in laboratory studies."
+        ]
     },
 
     "bryophyllum pinnatum": {
-        type: "plant",
+        type: "medicinal",
         benefits: [
-            "Traditionally used in some communities in herbal preparations; reliable evidence for many claimed medicinal effects is limited.",
-            "Its leaves contain plant compounds being studied for their biological properties."
-        ],
-        fact: "Its leaves can develop small plantlets along their edges."
+            "Benefit 1: It is grown as an ornamental succulent and can be propagated using plantlets along its leaf margins.",
+            "Benefit 2: It is studied by researchers for potentially useful plant compounds, including antioxidant activity; its medicinal effectiveness in humans is not well established."
+        ]
     },
 
     "aloe vera": {
-        type: "plant",
+        type: "medicinal",
         benefits: [
-            "Aloe vera gel is commonly used to moisturize dry skin.",
-            "Some aloe vera gel products may help soothe minor skin irritation; evidence varies by use and product."
-        ],
-        fact: "Aloe vera is a succulent that stores water in its fleshy leaves."
+            "Benefit 1: Aloe vera gel can help soothe and moisturize dry skin.",
+            "Benefit 2: Certain aloe vera gel products may help soothe minor skin irritation and burns, although evidence varies by use and product."
+        ]
     },
 
     "crabgrass": {
         type: "weed",
-        benefits: [
-            "It often spreads close to the ground and can grow in lawns, gardens and disturbed soil.",
-            "Many crabgrass species have seed heads with several finger-like spikes."
-        ],
-        fact: "Crabgrass commonly refers to grasses in the genus Digitaria. Similar-looking grasses can be difficult to distinguish."
+        information:
+            "Crabgrass is a common grass weed that grows in lawns, gardens, fields, and along roadsides. It grows quickly and can compete with nearby plants for nutrients, water, light, and space."
     },
 
     "background / noise": {
-        type: "background"
+        type: "background",
+        information:
+            "Benefits will appear here if any medicinal plant is recognized."
     }
 };
 
@@ -68,7 +62,6 @@ let stableFrames = 0;
 let confirmedLabel = "";
 let lastAnnouncedLabel = "";
 
-// Makes label matching more reliable.
 function normaliseLabel(label) {
     return String(label || "").trim().toLowerCase();
 }
@@ -77,15 +70,6 @@ function getClassInfo(label) {
     return classInfo[normaliseLabel(label)] || null;
 }
 
-function isBackground(label) {
-    return normaliseLabel(label) === "background / noise";
-}
-
-function setStatus(message) {
-    statusText.textContent = message;
-}
-
-// Reset the stable-detection sequence.
 function resetDetection() {
     previousLabel = "";
     stableFrames = 0;
@@ -98,7 +82,6 @@ function showWaitingMessage(message) {
     confidenceInfo.textContent = "";
 }
 
-// Display the information appropriate to the detected class.
 function displayResult(label, confidence) {
     const info = getClassInfo(label);
 
@@ -106,48 +89,40 @@ function displayResult(label, confidence) {
     confidenceInfo.textContent =
         `Confidence: ${(confidence * 100).toFixed(1)}%`;
 
+    detailsText.style.whiteSpace = "pre-line";
+
     if (!info) {
         detailsText.textContent =
             "This class is not configured in FloraLens.";
         return;
     }
 
-    if (info.type === "background") {
-        detailsText.textContent =
-            "No supported plant detected.";
+    if (info.type === "medicinal") {
+        detailsText.textContent = info.benefits.join("\n\n");
         return;
     }
 
-    if (info.type === "weed") {
-        detailsText.textContent =
-            `Weed information:\n` +
-            `1. ${info.benefits[0]}\n` +
-            `2. ${info.benefits[1]}\n\n` +
-            `Interesting fact: ${info.fact}`;
-        return;
-    }
-
-    detailsText.textContent =
-        `Medicinal benefits:\n` +
-        `1. ${info.benefits[0]}\n` +
-        `2. ${info.benefits[1]}\n\n` +
-        `Interesting fact: ${info.fact}`;
+    // Crabgrass and Background / Noise display information,
+    // but neither is treated as a medicinal plant.
+    detailsText.textContent = info.information;
 }
 
-// Speak ONLY the class name.
-// Never pass the details or benefits to speech synthesis.
 function announceClassName(label) {
     if (!voiceEnabled || !("speechSynthesis" in window)) {
         return;
     }
 
-    if (label === lastAnnouncedLabel) {
+    const normalised = normaliseLabel(label);
+
+    if (normalised === normaliseLabel(lastAnnouncedLabel)) {
         return;
     }
 
     window.speechSynthesis.cancel();
 
-    const utterance = new SpeechSynthesisUtterance(label);
+    const message = `FloraLens has identified it as ${label}.`;
+    const utterance = new SpeechSynthesisUtterance(message);
+
     utterance.lang = "en-IN";
     utterance.rate = 0.9;
 
@@ -155,7 +130,6 @@ function announceClassName(label) {
     lastAnnouncedLabel = label;
 }
 
-// Display the model's current predictions for debugging and feedback.
 function displayPredictions(predictions) {
     predictionsText.textContent = predictions
         .map(prediction =>
@@ -168,8 +142,8 @@ async function startScanner() {
     if (isRunning) return;
 
     try {
-        setStatus("Loading FloraLens AI model...");
         startBtn.disabled = true;
+        setStatus("Loading FloraLens AI model...");
 
         if (!model) {
             model = await tmImage.load(
@@ -193,15 +167,14 @@ async function startScanner() {
         setStatus("Scanner running. Point the camera at a plant.");
         showWaitingMessage("Looking for a supported class...");
 
-        startBtn.disabled = true;
         stopBtn.disabled = false;
-
         animationId = requestAnimationFrame(scanLoop);
+
     } catch (error) {
         console.error("FloraLens scanner error:", error);
 
         setStatus(
-            "Could not start the scanner. Check camera permission and your internet connection."
+            "Could not start the scanner. Check camera permission and internet connection."
         );
 
         startBtn.disabled = false;
@@ -226,7 +199,9 @@ async function scanLoop() {
         const confidence = topPrediction.probability;
 
         if (confidence > CONFIDENCE_THRESHOLD) {
-            if (normaliseLabel(label) === normaliseLabel(previousLabel)) {
+            if (
+                normaliseLabel(label) === normaliseLabel(previousLabel)
+            ) {
                 stableFrames++;
             } else {
                 previousLabel = label;
@@ -234,16 +209,16 @@ async function scanLoop() {
             }
 
             if (stableFrames >= REQUIRED_STABLE_FRAMES) {
-                const normalised = normaliseLabel(label);
+                const isNewClass =
+                    normaliseLabel(label) !==
+                    normaliseLabel(confirmedLabel);
 
-                if (normalised !== normaliseLabel(confirmedLabel)) {
-                    confirmedLabel = label;
-                    displayResult(label, confidence);
+                confirmedLabel = label;
+
+                displayResult(label, confidence);
+
+                if (isNewClass) {
                     announceClassName(label);
-                } else {
-                    // Keep the displayed confidence up to date
-                    // without repeatedly announcing the same class.
-                    displayResult(label, confidence);
                 }
 
                 setStatus(`Detected: ${label}`);
@@ -254,9 +229,11 @@ async function scanLoop() {
             }
         } else {
             resetDetection();
+
             showWaitingMessage(
                 "Not confident enough yet. Move the camera closer or try another angle."
             );
+
             setStatus("Searching for a supported class...");
         }
     } catch (error) {
@@ -307,8 +284,7 @@ function toggleVoice() {
         window.speechSynthesis.cancel();
     }
 
-    // Do not announce an old detection just because voice was enabled.
-    // The next newly confirmed class can be announced.
+    // Enabling voice does not repeat the class already announced.
     lastAnnouncedLabel = confirmedLabel;
 }
 
@@ -316,8 +292,8 @@ startBtn.addEventListener("click", startScanner);
 stopBtn.addEventListener("click", stopScanner);
 voiceBtn.addEventListener("click", toggleVoice);
 
-// Initial button states.
 stopBtn.disabled = true;
 voiceBtn.textContent = "Voice: OFF";
+
 setStatus("Ready to scan.");
 showWaitingMessage("Press Start Scanner to begin.");
