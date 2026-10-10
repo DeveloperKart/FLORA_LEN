@@ -1,432 +1,323 @@
 
-/* ==========================================
-   FLORALENS — AI PLANT SCANNER
-   ========================================== */
-
-const MODEL_URL =
-    "https://teachablemachine.withgoogle.com/models/mIiK1Xitk/";
-
+const MODEL_URL = "https://teachablemachine.withgoogle.com/models/mIiK1Xitk/";
 const CONFIDENCE_THRESHOLD = 0.85;
 const REQUIRED_STABLE_FRAMES = 5;
 
-// Scanner state
-let model = null;
-let webcam = null;
-let scanning = false;
-let voiceEnabled = true;
-let scanningLoop = null;
-
-// Voice announcement memory
-let lastAnnouncedClass = "";
-let candidateClass = "";
-let stableFrames = 0;
-
-// HTML elements from scanner.html
 const camera = document.getElementById("camera");
 const statusText = document.getElementById("status");
 const resultText = document.getElementById("result");
 const detailsText = document.getElementById("details");
-const predictionsBox = document.getElementById("predictions");
+const predictionsText = document.getElementById("predictions");
 const confidenceInfo = document.getElementById("confidenceInfo");
-
 const startBtn = document.getElementById("startBtn");
 const stopBtn = document.getElementById("stopBtn");
 const voiceBtn = document.getElementById("voiceBtn");
 
-/* ==========================================
-   PLANT INFORMATION
-   ========================================== */
-
-const plantInfo = {
+// Information displayed for each supported class.
+// Voice output will NEVER read these descriptions aloud.
+const classInfo = {
     "tulsi": {
-        title: "Tulsi",
+        type: "plant",
         benefits: [
-            "Its aromatic leaves are used in cooking and traditional practices.",
-            "Its flowers can provide food for visiting pollinators."
+            "Traditionally used in herbal preparations for coughs and colds.",
+            "Tulsi contains plant compounds that have shown antioxidant activity in laboratory studies."
         ],
-        fact:
-            "Tulsi is also known as holy basil."
+        fact: "Tulsi is also known as holy basil and is commonly grown in Indian homes."
     },
 
     "bryophyllum pinnatum": {
-        title: "Bryophyllum pinnatum",
+        type: "plant",
         benefits: [
-            "It is grown as an ornamental succulent.",
-            "It can be propagated using plantlets that grow along its leaf margins."
+            "Traditionally used in some communities in herbal preparations; reliable evidence for many claimed medicinal effects is limited.",
+            "Its leaves contain plant compounds being studied for their biological properties."
         ],
-        fact:
-            "Tiny plantlets can develop along the edges of its leaves."
+        fact: "Its leaves can develop small plantlets along their edges."
     },
 
     "aloe vera": {
-        title: "Aloe Vera",
+        type: "plant",
         benefits: [
-            "It is a drought-tolerant plant once established.",
-            "Its gel is used in some skincare products."
+            "Aloe vera gel is commonly used to moisturize dry skin.",
+            "Some aloe vera gel products may help soothe minor skin irritation; evidence varies by use and product."
         ],
-        fact:
-            "Aloe Vera has thick, fleshy leaves that store water."
+        fact: "Aloe vera is a succulent that stores water in its fleshy leaves."
     },
 
     "crabgrass": {
-        title: "Crabgrass",
+        type: "weed",
         benefits: [
-            "It can provide ground cover in some environments.",
-            "Its seeds can provide food for some seed-eating birds."
+            "It often spreads close to the ground and can grow in lawns, gardens and disturbed soil.",
+            "Many crabgrass species have seed heads with several finger-like spikes."
         ],
-        fact:
-            "Crabgrass is a common grass weed in lawns and gardens."
+        fact: "Crabgrass commonly refers to grasses in the genus Digitaria. Similar-looking grasses can be difficult to distinguish."
+    },
+
+    "background / noise": {
+        type: "background"
     }
 };
 
-const BACKGROUND_CLASS = "background / noise";
+let model = null;
+let webcam = null;
+let animationId = null;
+let isRunning = false;
+let voiceEnabled = false;
 
-/* ==========================================
-   HELPER FUNCTIONS
-   ========================================== */
+let previousLabel = "";
+let stableFrames = 0;
+let confirmedLabel = "";
+let lastAnnouncedLabel = "";
 
+// Makes label matching more reliable.
 function normaliseLabel(label) {
-    return label.trim().toLowerCase();
+    return String(label || "").trim().toLowerCase();
+}
+
+function getClassInfo(label) {
+    return classInfo[normaliseLabel(label)] || null;
 }
 
 function isBackground(label) {
-    return normaliseLabel(label) === BACKGROUND_CLASS;
+    return normaliseLabel(label) === "background / noise";
 }
 
-function getPlantInfo(label) {
-    return plantInfo[normaliseLabel(label)] || {
-        title: label,
-        benefits: [
-            "Further research may help establish its practical uses.",
-            "Correct identification is important before relying on plant information."
-        ],
-        fact:
-            "This class name comes from your trained AI model."
-    };
+function setStatus(message) {
+    statusText.textContent = message;
 }
 
-/* ==========================================
-   VOICE — SPEAK CLASS NAME ONLY
-   ========================================== */
+// Reset the stable-detection sequence.
+function resetDetection() {
+    previousLabel = "";
+    stableFrames = 0;
+    confirmedLabel = "";
+}
 
-function speakClassName(label) {
-    if (
-        !voiceEnabled ||
-        !("speechSynthesis" in window)
-    ) {
+function showWaitingMessage(message) {
+    resultText.textContent = message;
+    detailsText.textContent = "";
+    confidenceInfo.textContent = "";
+}
+
+// Display the information appropriate to the detected class.
+function displayResult(label, confidence) {
+    const info = getClassInfo(label);
+
+    resultText.textContent = label;
+    confidenceInfo.textContent =
+        `Confidence: ${(confidence * 100).toFixed(1)}%`;
+
+    if (!info) {
+        detailsText.textContent =
+            "This class is not configured in FloraLens.";
+        return;
+    }
+
+    if (info.type === "background") {
+        detailsText.textContent =
+            "No supported plant detected.";
+        return;
+    }
+
+    if (info.type === "weed") {
+        detailsText.textContent =
+            `Weed information:\n` +
+            `1. ${info.benefits[0]}\n` +
+            `2. ${info.benefits[1]}\n\n` +
+            `Interesting fact: ${info.fact}`;
+        return;
+    }
+
+    detailsText.textContent =
+        `Medicinal benefits:\n` +
+        `1. ${info.benefits[0]}\n` +
+        `2. ${info.benefits[1]}\n\n` +
+        `Interesting fact: ${info.fact}`;
+}
+
+// Speak ONLY the class name.
+// Never pass the details or benefits to speech synthesis.
+function announceClassName(label) {
+    if (!voiceEnabled || !("speechSynthesis" in window)) {
+        return;
+    }
+
+    if (label === lastAnnouncedLabel) {
         return;
     }
 
     window.speechSynthesis.cancel();
 
     const utterance = new SpeechSynthesisUtterance(label);
-
     utterance.lang = "en-IN";
-    utterance.rate = 0.95;
-    utterance.pitch = 1;
+    utterance.rate = 0.9;
 
     window.speechSynthesis.speak(utterance);
+    lastAnnouncedLabel = label;
 }
 
-/* ==========================================
-   DISPLAY RESULTS
-   ========================================== */
-
-function displayResult(prediction) {
-    const label = prediction.className;
-    const confidence = prediction.probability;
-    const percentage = (confidence * 100).toFixed(1);
-
-    resultText.textContent = label;
-
-    confidenceInfo.textContent =
-        `Confidence: ${percentage}%`;
-
-    if (isBackground(label)) {
-        detailsText.textContent =
-            "Background or noise detected. " +
-            "Show a clear plant in front of the camera " +
-            "to see its benefits and interesting facts.";
-
-        return;
-    }
-
-    const info = getPlantInfo(label);
-
-    resultText.textContent = info.title;
-
-    detailsText.textContent =
-        `Benefits\n` +
-        `1. ${info.benefits[0]}\n` +
-        `2. ${info.benefits[1]}\n\n` +
-        `Interesting fact\n` +
-        `${info.fact}`;
-
-    detailsText.style.whiteSpace = "pre-line";
+// Display the model's current predictions for debugging and feedback.
+function displayPredictions(predictions) {
+    predictionsText.textContent = predictions
+        .map(prediction =>
+            `${prediction.className}: ${(prediction.probability * 100).toFixed(1)}%`
+        )
+        .join("\n");
 }
-
-/* ==========================================
-   CONFIDENCE BARS
-   ========================================== */
-
-function renderPredictions(predictions) {
-    predictionsBox.replaceChildren();
-
-    for (const prediction of predictions) {
-        const percentage = prediction.probability * 100;
-
-        const row = document.createElement("div");
-        row.className = "prediction";
-
-        const label = document.createElement("div");
-
-        label.textContent =
-            `${prediction.className}: ${percentage.toFixed(1)}%`;
-
-        const bar = document.createElement("div");
-        bar.className = "bar";
-
-        const fill = document.createElement("div");
-        fill.className = "fill";
-
-        fill.style.width =
-            `${Math.max(0, Math.min(100, percentage))}%`;
-
-        bar.appendChild(fill);
-        row.append(label, bar);
-        predictionsBox.appendChild(row);
-    }
-}
-
-/* ==========================================
-   LOAD TEACHABLE MACHINE MODEL
-   ========================================== */
-
-async function loadModel() {
-    if (model) return;
-
-    statusText.textContent = "Loading FloraLens AI model...";
-
-    model = await tmImage.load(
-        MODEL_URL + "model.json",
-        MODEL_URL + "metadata.json"
-    );
-
-    statusText.textContent =
-        "Model loaded successfully.";
-}
-
-/* ==========================================
-   START SCANNER
-   ========================================== */
 
 async function startScanner() {
-    if (scanning) return;
-
-    startBtn.disabled = true;
+    if (isRunning) return;
 
     try {
-        await loadModel();
+        setStatus("Loading FloraLens AI model...");
+        startBtn.disabled = true;
 
-        statusText.textContent =
-            "Requesting camera permission...";
+        if (!model) {
+            model = await tmImage.load(
+                MODEL_URL + "model.json",
+                MODEL_URL + "metadata.json"
+            );
+        }
+
+        setStatus("Requesting camera permission...");
 
         webcam = new tmImage.Webcam(320, 320, true);
-
         await webcam.setup();
         await webcam.play();
 
-        camera.replaceChildren(webcam.canvas);
+        camera.innerHTML = "";
+        camera.appendChild(webcam.canvas);
 
-        scanning = true;
+        isRunning = true;
+        resetDetection();
+
+        setStatus("Scanner running. Point the camera at a plant.");
+        showWaitingMessage("Looking for a supported class...");
+
+        startBtn.disabled = true;
         stopBtn.disabled = false;
 
-        candidateClass = "";
-        stableFrames = 0;
-
-        statusText.textContent =
-            "Scanner running. Show a plant or background.";
-
-        scanningLoop = requestAnimationFrame(scanFrame);
-
+        animationId = requestAnimationFrame(scanLoop);
     } catch (error) {
-        console.error("FloraLens startup error:", error);
+        console.error("FloraLens scanner error:", error);
 
-        if (webcam) {
-            try {
-                webcam.stop();
-            } catch (cleanupError) {
-                console.warn(cleanupError);
-            }
+        setStatus(
+            "Could not start the scanner. Check camera permission and your internet connection."
+        );
 
-            webcam = null;
-        }
-
-        scanning = false;
         startBtn.disabled = false;
         stopBtn.disabled = true;
-
-        statusText.textContent =
-            "Scanner could not start. Check your internet, " +
-            "camera permission, and model URL.";
     }
 }
 
-/* ==========================================
-   SCAN AND CLASSIFY
-   ========================================== */
-
-async function scanFrame() {
-    if (!scanning || !webcam || !model) return;
+async function scanLoop() {
+    if (!isRunning || !webcam || !model) return;
 
     try {
         webcam.update();
 
-        const predictions =
-            await model.predict(webcam.canvas);
+        const predictions = await model.predict(webcam.canvas);
+        displayPredictions(predictions);
 
-        if (!scanning) return;
-
-        predictions.sort(
-            (a, b) => b.probability - a.probability
+        const topPrediction = predictions.reduce((best, current) =>
+            current.probability > best.probability ? current : best
         );
 
-        renderPredictions(predictions);
+        const label = topPrediction.className;
+        const confidence = topPrediction.probability;
 
-        const best = predictions[0];
-
-        if (!best) {
-            statusText.textContent =
-                "Waiting for a prediction.";
-
-            candidateClass = "";
-            stableFrames = 0;
-
-        } else {
-            // Always display the current best prediction.
-            // Background predictions never show plant benefits.
-            displayResult(best);
-
-            if (
-                best.probability <= CONFIDENCE_THRESHOLD
-            ) {
-                statusText.textContent =
-                    "Waiting for confidence above 85%.";
-
-                candidateClass = "";
-                stableFrames = 0;
-
+        if (confidence > CONFIDENCE_THRESHOLD) {
+            if (normaliseLabel(label) === normaliseLabel(previousLabel)) {
+                stableFrames++;
             } else {
-                // Count consecutive frames for the same class.
-                if (best.className === candidateClass) {
-                    stableFrames++;
-                } else {
-                    candidateClass = best.className;
-                    stableFrames = 1;
-                }
-
-                if (
-                    stableFrames >= REQUIRED_STABLE_FRAMES &&
-                    best.className !== lastAnnouncedClass
-                ) {
-                    // Announce only the class name.
-                    speakClassName(best.className);
-
-                    lastAnnouncedClass = best.className;
-
-                    statusText.textContent =
-                        `Announced: ${best.className}. ` +
-                        "Waiting for a different qualifying class.";
-                }
+                previousLabel = label;
+                stableFrames = 1;
             }
+
+            if (stableFrames >= REQUIRED_STABLE_FRAMES) {
+                const normalised = normaliseLabel(label);
+
+                if (normalised !== normaliseLabel(confirmedLabel)) {
+                    confirmedLabel = label;
+                    displayResult(label, confidence);
+                    announceClassName(label);
+                } else {
+                    // Keep the displayed confidence up to date
+                    // without repeatedly announcing the same class.
+                    displayResult(label, confidence);
+                }
+
+                setStatus(`Detected: ${label}`);
+            } else {
+                setStatus(
+                    `Checking detection stability... ${stableFrames}/${REQUIRED_STABLE_FRAMES}`
+                );
+            }
+        } else {
+            resetDetection();
+            showWaitingMessage(
+                "Not confident enough yet. Move the camera closer or try another angle."
+            );
+            setStatus("Searching for a supported class...");
         }
-
     } catch (error) {
-        console.error("FloraLens prediction error:", error);
-
-        statusText.textContent =
-            "Prediction failed. Try restarting the scanner.";
+        console.error("Prediction error:", error);
+        setStatus("Prediction error. Please restart the scanner.");
     }
 
-    if (scanning) {
-        scanningLoop = requestAnimationFrame(scanFrame);
+    if (isRunning) {
+        animationId = requestAnimationFrame(scanLoop);
     }
 }
 
-/* ==========================================
-   STOP SCANNER
-   ========================================== */
-
 function stopScanner() {
-    scanning = false;
+    isRunning = false;
 
-    if (scanningLoop !== null) {
-        cancelAnimationFrame(scanningLoop);
-        scanningLoop = null;
+    if (animationId !== null) {
+        cancelAnimationFrame(animationId);
+        animationId = null;
     }
 
     if (webcam) {
-        try {
-            webcam.stop();
-        } catch (error) {
-            console.warn("Camera cleanup:", error);
-        }
-
+        webcam.stop();
         webcam = null;
     }
-
-    camera.replaceChildren();
 
     if ("speechSynthesis" in window) {
         window.speechSynthesis.cancel();
     }
 
+    camera.innerHTML = "";
+    resetDetection();
+
+    setStatus("Scanner stopped.");
+    showWaitingMessage("Press Start Scanner to begin.");
+
     startBtn.disabled = false;
     stopBtn.disabled = true;
-
-    resultText.textContent = "Waiting for a plant...";
-
-    detailsText.textContent =
-        "Start the scanner to identify a plant.";
-
-    confidenceInfo.textContent =
-        "Confidence scores will appear here.";
-
-    predictionsBox.replaceChildren();
-
-    statusText.textContent = "Scanner stopped.";
-
-    candidateClass = "";
-    stableFrames = 0;
-
-    // Start a fresh announcement sequence next time.
-    lastAnnouncedClass = "";
 }
 
-/* ==========================================
-   BUTTON EVENTS
-   ========================================== */
-
-startBtn.addEventListener("click", startScanner);
-
-stopBtn.addEventListener("click", stopScanner);
-
-voiceBtn.addEventListener("click", () => {
+function toggleVoice() {
     voiceEnabled = !voiceEnabled;
 
-    voiceBtn.textContent =
-        `Voice: ${voiceEnabled ? "ON" : "OFF"}`;
+    voiceBtn.textContent = voiceEnabled
+        ? "Voice: ON"
+        : "Voice: OFF";
 
-    if (
-        !voiceEnabled &&
-        "speechSynthesis" in window
-    ) {
+    if (!voiceEnabled && "speechSynthesis" in window) {
         window.speechSynthesis.cancel();
     }
 
-    statusText.textContent = voiceEnabled
-        ? "Voice enabled."
-        : "Voice disabled.";
-});
+    // Do not announce an old detection just because voice was enabled.
+    // The next newly confirmed class can be announced.
+    lastAnnouncedLabel = confirmedLabel;
+}
 
-window.addEventListener("pagehide", stopScanner);
+startBtn.addEventListener("click", startScanner);
+stopBtn.addEventListener("click", stopScanner);
+voiceBtn.addEventListener("click", toggleVoice);
+
+// Initial button states.
+stopBtn.disabled = true;
+voiceBtn.textContent = "Voice: OFF";
+setStatus("Ready to scan.");
+showWaitingMessage("Press Start Scanner to begin.");
