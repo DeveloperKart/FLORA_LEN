@@ -62,14 +62,17 @@ let stableFrames = 0;
 let confirmedLabel = "";
 let lastAnnouncedLabel = "";
 
+// Normalize labels returned by Teachable Machine.
 function normaliseLabel(label) {
-    return String(label || "").trim().toLowerCase();
+    return String(label || "")
+        .trim()
+        .toLowerCase()
+        .replace(/\s+/g, " ");
 }
 
-
+// Match model labels to the information database.
 function getClassInfo(label) {
-    const name = normaliseLabel(label)
-        .replace(/\s+/g, " ");
+    const name = normaliseLabel(label);
 
     const aliases = {
         "tulsi": "tulsi",
@@ -82,14 +85,19 @@ function getClassInfo(label) {
         "background": "background / noise"
     };
 
-    const key = aliases[name] || name;
-    return classInfo[key] || null;
+    return classInfo[aliases[name] || name] || null;
+}
+
+// This function was missing from your pasted code.
+function setStatus(message) {
+    if (statusText) {
+        statusText.textContent = message;
+    }
 }
 
 function resetDetection() {
     previousLabel = "";
     stableFrames = 0;
-    confirmedLabel = "";
 }
 
 function showWaitingMessage(message) {
@@ -98,6 +106,7 @@ function showWaitingMessage(message) {
     confidenceInfo.textContent = "";
 }
 
+// Display the correct information for each class.
 function displayResult(label, confidence) {
     const info = getClassInfo(label);
 
@@ -109,41 +118,29 @@ function displayResult(label, confidence) {
 
     if (!info) {
         detailsText.textContent =
-            "This class is not configured in FloraLens.";
+            "This class is not configured in FloraLens. Check the model's exact class label.";
         return;
     }
 
     if (info.type === "medicinal") {
         detailsText.textContent = info.benefits.join("\n\n");
-        return;
+    } else {
+        // Crabgrass gets weed information.
+        // Background / Noise gets only its designated message.
+        detailsText.textContent = info.information;
     }
-
-    // Crabgrass and Background / Noise display information,
-    // but neither is treated as a medicinal plant.
-    detailsText.textContent = info.information;
 }
 
-
+// Voice announces the complete sentence, never the benefits.
 function announceClassName(label) {
     if (!voiceEnabled || !("speechSynthesis" in window)) {
         return;
     }
 
-    const message = `FloraLens has identified it as ${label}.`;
-
-    window.speechSynthesis.cancel();
-
-    const utterance = new SpeechSynthesisUtterance(message);
-    utterance.lang = "en-IN";
-    utterance.rate = 0.9;
-
-    window.speechSynthesis.speak(utterance);
-    lastAnnouncedLabel = label;
-}
-
-    const normalised = normaliseLabel(label);
-
-    if (normalised === normaliseLabel(lastAnnouncedLabel)) {
+    if (
+        normaliseLabel(label) ===
+        normaliseLabel(lastAnnouncedLabel)
+    ) {
         return;
     }
 
@@ -159,12 +156,51 @@ function announceClassName(label) {
     lastAnnouncedLabel = label;
 }
 
+// Draw a confidence poll for every class.
 function displayPredictions(predictions) {
-    predictionsText.textContent = predictions
-        .map(prediction =>
-            `${prediction.className}: ${(prediction.probability * 100).toFixed(1)}%`
-        )
-        .join("\n");
+    predictionsText.replaceChildren();
+
+    predictions.forEach(prediction => {
+        const percentage = Math.max(
+            0,
+            Math.min(100, prediction.probability * 100)
+        );
+
+        const row = document.createElement("div");
+        row.style.marginBottom = "12px";
+
+        const heading = document.createElement("div");
+        heading.style.display = "flex";
+        heading.style.justifyContent = "space-between";
+        heading.style.gap = "10px";
+        heading.style.marginBottom = "4px";
+
+        const name = document.createElement("span");
+        name.textContent = prediction.className;
+
+        const value = document.createElement("span");
+        value.textContent = `${percentage.toFixed(1)}%`;
+
+        heading.append(name, value);
+
+        const track = document.createElement("div");
+        track.style.width = "100%";
+        track.style.height = "10px";
+        track.style.backgroundColor = "#e5e7eb";
+        track.style.borderRadius = "6px";
+        track.style.overflow = "hidden";
+
+        const bar = document.createElement("div");
+        bar.style.width = `${percentage}%`;
+        bar.style.height = "100%";
+        bar.style.backgroundColor = "#16a34a";
+        bar.style.borderRadius = "6px";
+        bar.style.transition = "width 0.2s ease";
+
+        track.appendChild(bar);
+        row.append(heading, track);
+        predictionsText.appendChild(row);
+    });
 }
 
 async function startScanner() {
@@ -187,11 +223,12 @@ async function startScanner() {
         await webcam.setup();
         await webcam.play();
 
-        camera.innerHTML = "";
+        camera.replaceChildren();
         camera.appendChild(webcam.canvas);
 
         isRunning = true;
         resetDetection();
+        confirmedLabel = "";
 
         setStatus("Scanner running. Point the camera at a plant.");
         showWaitingMessage("Looking for a supported class...");
@@ -202,8 +239,15 @@ async function startScanner() {
     } catch (error) {
         console.error("FloraLens scanner error:", error);
 
+        if (webcam) {
+            try {
+                webcam.stop();
+            } catch (_) {}
+            webcam = null;
+        }
+
         setStatus(
-            "Could not start the scanner. Check camera permission and internet connection."
+            "Could not start the scanner. Check camera permission, internet connection, and browser console."
         );
 
         startBtn.disabled = false;
@@ -229,7 +273,8 @@ async function scanLoop() {
 
         if (confidence > CONFIDENCE_THRESHOLD) {
             if (
-                normaliseLabel(label) === normaliseLabel(previousLabel)
+                normaliseLabel(label) ===
+                normaliseLabel(previousLabel)
             ) {
                 stableFrames++;
             } else {
@@ -243,7 +288,6 @@ async function scanLoop() {
                     normaliseLabel(confirmedLabel);
 
                 confirmedLabel = label;
-
                 displayResult(label, confidence);
 
                 if (isNewClass) {
@@ -265,9 +309,10 @@ async function scanLoop() {
 
             setStatus("Searching for a supported class...");
         }
+
     } catch (error) {
         console.error("Prediction error:", error);
-        setStatus("Prediction error. Please restart the scanner.");
+        setStatus("Prediction error. Check the browser console.");
     }
 
     if (isRunning) {
@@ -292,11 +337,15 @@ function stopScanner() {
         window.speechSynthesis.cancel();
     }
 
-    camera.innerHTML = "";
+    camera.replaceChildren();
     resetDetection();
+    confirmedLabel = "";
+    lastAnnouncedLabel = "";
 
     setStatus("Scanner stopped.");
     showWaitingMessage("Press Start Scanner to begin.");
+
+    predictionsText.replaceChildren();
 
     startBtn.disabled = false;
     stopBtn.disabled = true;
@@ -313,7 +362,7 @@ function toggleVoice() {
         window.speechSynthesis.cancel();
     }
 
-    // Enabling voice does not repeat the class already announced.
+    // Do not repeat the already-confirmed class when voice is enabled.
     lastAnnouncedLabel = confirmedLabel;
 }
 
