@@ -2,16 +2,18 @@
 const MODEL_URL =
     "https://teachablemachine.withgoogle.com/models/mIiK1Xitk/";
 
-const CONFIDENCE_THRESHOLD = 0.70;
+const CONFIDENCE_THRESHOLD = 0.85;
+const REQUIRED_STABLE_FRAMES = 5;
 
 let model = null;
 let webcam = null;
 let scanning = false;
 let voiceEnabled = true;
 let scanningLoop = null;
-let lastSpokenLabel = "";
-let lastSpokenTime = 0;
-let lastStableLabel = "";
+
+// Voice control: remember the last plant announced.
+let lastAnnouncedLabel = "";
+let lastCandidateLabel = "";
 let stableFrames = 0;
 
 const camera = document.getElementById("camera");
@@ -25,35 +27,57 @@ const startBtn = document.getElementById("startBtn");
 const stopBtn = document.getElementById("stopBtn");
 const voiceBtn = document.getElementById("voiceBtn");
 
+// Benefits and facts are educational information,
+// not medical advice or proof of medicinal effectiveness.
 const plantInfo = {
     "tulsi": {
         title: "Tulsi",
-        description:
-            "Aromatic medicinal herb also known as holy basil."
+        benefits: [
+            "Its aromatic leaves are used in cooking and traditional practices.",
+            "Its flowers can provide food for visiting pollinators."
+        ],
+        fact:
+            "Tulsi is also known as holy basil."
     },
 
     "bryophyllum pinnatum": {
         title: "Bryophyllum pinnatum",
-        description:
-            "A succulent plant known for plantlets that can grow along its leaf margins."
+        benefits: [
+            "It makes an interesting ornamental succulent.",
+            "It can be propagated using plantlets that grow along leaf margins."
+        ],
+        fact:
+            "Its leaf margins can develop tiny plantlets."
     },
 
     "kalanchoe pinnata": {
         title: "Bryophyllum pinnatum",
-        description:
-            "A succulent plant known for plantlets that can grow along its leaf margins."
+        benefits: [
+            "It makes an interesting ornamental succulent.",
+            "It can be propagated using plantlets that grow along leaf margins."
+        ],
+        fact:
+            "Its leaf margins can develop tiny plantlets."
     },
 
     "aloe vera": {
         title: "Aloe Vera",
-        description:
-            "A succulent plant with thick leaves containing a clear inner gel."
+        benefits: [
+            "It is a drought-tolerant plant once established.",
+            "Its gel is used in some skincare products."
+        ],
+        fact:
+            "Aloe vera has thick, fleshy leaves that store water."
     },
 
     "crabgrass": {
         title: "Crabgrass",
-        description:
-            "A common grass weed. Exact species identification may require closer examination."
+        benefits: [
+            "It can provide ground cover in some environments.",
+            "Its seeds can provide food for some seed-eating birds."
+        ],
+        fact:
+            "Crabgrass is a common grass weed in lawns and gardens."
     }
 };
 
@@ -64,46 +88,61 @@ function normaliseLabel(label) {
 function getPlantInfo(label) {
     return plantInfo[normaliseLabel(label)] || {
         title: label,
-        description:
-            "This is a label from your trained AI model. " +
-            "Confirm the plant identity before relying on this result."
+        benefits: [
+            "The model has classified this image into this category.",
+            "Further identification may help establish its practical uses."
+        ],
+        fact:
+            "This name comes from the class labels in your trained model."
     };
 }
 
-function speak(text) {
-    if (!voiceEnabled || !("speechSynthesis" in window)) {
+function speakPlant(label, confidence) {
+    if (
+        !voiceEnabled ||
+        !("speechSynthesis" in window)
+    ) {
         return;
     }
 
+    const info = getPlantInfo(label);
+
+    const announcement =
+        `FloraLens identifies ${info.title}. ` +
+        `Confidence: ${Math.round(confidence * 100)} percent. ` +
+        `Benefit one: ${info.benefits[0]} ` +
+        `Benefit two: ${info.benefits[1]} ` +
+        `Interesting fact: ${info.fact}`;
+
+    // Cancel any previous speech only when a new plant
+    // qualifies for an announcement.
     window.speechSynthesis.cancel();
 
-    const utterance = new SpeechSynthesisUtterance(text);
+    const utterance =
+        new SpeechSynthesisUtterance(announcement);
+
     utterance.lang = "en-IN";
     utterance.rate = 0.95;
+    utterance.pitch = 1;
 
     window.speechSynthesis.speak(utterance);
 }
 
 async function loadModel() {
-    if (model) {
-        return;
-    }
+    if (model) return;
 
-    statusText.textContent = "Loading your FloraLens AI model...";
+    statusText.textContent = "Loading FloraLens AI...";
 
     model = await tmImage.load(
         MODEL_URL + "model.json",
         MODEL_URL + "metadata.json"
     );
 
-    statusText.textContent =
-        "AI model loaded. Your camera is ready.";
+    statusText.textContent = "AI model loaded.";
 }
 
 async function startScanner() {
-    if (scanning) {
-        return;
-    }
+    if (scanning) return;
 
     startBtn.disabled = true;
 
@@ -121,25 +160,24 @@ async function startScanner() {
         camera.replaceChildren(webcam.canvas);
 
         scanning = true;
-        startBtn.disabled = true;
         stopBtn.disabled = false;
 
+        lastCandidateLabel = "";
+        stableFrames = 0;
+
         statusText.textContent =
-            "Scanning. Place one plant clearly in view.";
+            "Scanning for plants...";
 
         scanningLoop = requestAnimationFrame(scanFrame);
-    } catch (error) {
-        console.error("FloraLens scanner error:", error);
 
-        statusText.textContent =
-            "Could not start the scanner. Check your internet, " +
-            "camera permission, and model URL.";
+    } catch (error) {
+        console.error("FloraLens startup error:", error);
 
         if (webcam) {
             try {
                 webcam.stop();
-            } catch (stopError) {
-                console.warn(stopError);
+            } catch (cleanupError) {
+                console.warn(cleanupError);
             }
             webcam = null;
         }
@@ -147,22 +185,23 @@ async function startScanner() {
         scanning = false;
         startBtn.disabled = false;
         stopBtn.disabled = true;
+
+        statusText.textContent =
+            "Could not start. Check internet access, " +
+            "camera permission, and the model URL.";
     }
 }
 
 async function scanFrame() {
-    if (!scanning || !webcam || !model) {
-        return;
-    }
+    if (!scanning || !webcam || !model) return;
 
     try {
         webcam.update();
 
-        const predictions = await model.predict(webcam.canvas);
+        const predictions =
+            await model.predict(webcam.canvas);
 
-        if (!scanning) {
-            return;
-        }
+        if (!scanning) return;
 
         predictions.sort(
             (a, b) => b.probability - a.probability
@@ -172,61 +211,68 @@ async function scanFrame() {
 
         renderPredictions(predictions);
 
-        if (best.probability < CONFIDENCE_THRESHOLD) {
-            resultText.textContent = "Not sure yet";
+        if (!best || best.probability <= CONFIDENCE_THRESHOLD) {
+            resultText.textContent =
+                "Waiting for confidence above 85%";
+
             detailsText.textContent =
-                "Try better lighting, a clearer view, or another angle.";
+                "Keep one plant clearly in view.";
 
             confidenceInfo.textContent =
-                "No prediction has reached the confidence threshold.";
+                "No prediction has crossed the 85% threshold.";
 
-            lastStableLabel = "";
+            lastCandidateLabel = "";
             stableFrames = 0;
+
         } else {
             const info = getPlantInfo(best.className);
 
             resultText.textContent = info.title;
-            detailsText.textContent = info.description;
+
+            detailsText.textContent =
+                `Benefit 1: ${info.benefits[0]} ` +
+                `Benefit 2: ${info.benefits[1]} ` +
+                `Fact: ${info.fact}`;
 
             confidenceInfo.textContent =
-                "Top prediction confidence: " +
-                (best.probability * 100).toFixed(1) + "%.";
+                `Confidence: ${(best.probability * 100).toFixed(1)}%`;
 
-            if (best.className === lastStableLabel) {
+            // Require the same qualifying prediction for five
+            // consecutive frames before considering it stable.
+            if (best.className === lastCandidateLabel) {
                 stableFrames++;
             } else {
-                lastStableLabel = best.className;
+                lastCandidateLabel = best.className;
                 stableFrames = 1;
             }
 
-            const now = Date.now();
-
-            // Speak only after a prediction remains stable.
-            // Avoid repeating the same announcement every frame.
+            // Announce ONLY if:
+            // 1. Confidence is above 85%.
+            // 2. The prediction is stable.
+            // 3. It differs from the last announced plant.
             if (
-                stableFrames >= 5 &&
-                (
-                    lastSpokenLabel !== best.className ||
-                    now - lastSpokenTime > 8000
-                )
+                stableFrames >= REQUIRED_STABLE_FRAMES &&
+                best.className !== lastAnnouncedLabel
             ) {
-                speak(
-                    "FloraLens identifies " + info.title +
-                    ". Confidence " +
-                    Math.round(best.probability * 100) +
-                    " percent."
-                );
+                if (voiceEnabled) {
+                    speakPlant(
+                        best.className,
+                        best.probability
+                    );
+                }
 
-                lastSpokenLabel = best.className;
-                lastSpokenTime = now;
+                lastAnnouncedLabel = best.className;
+
+                statusText.textContent =
+                    `Announced ${info.title}. Waiting for a different plant above 85%.`;
             }
         }
 
-        statusText.textContent = "Scanner is running.";
     } catch (error) {
         console.error("Prediction error:", error);
+
         statusText.textContent =
-            "Prediction failed. Stop and restart the scanner.";
+            "Prediction error. Check the browser console.";
     }
 
     if (scanning) {
@@ -244,16 +290,16 @@ function renderPredictions(predictions) {
         row.className = "prediction";
 
         const label = document.createElement("div");
+
         label.textContent =
-            prediction.className + " — " +
-            percent.toFixed(1) + "%";
+            `${prediction.className}: ${percent.toFixed(1)}%`;
 
         const bar = document.createElement("div");
         bar.className = "bar";
 
         const fill = document.createElement("div");
         fill.className = "fill";
-        fill.style.width = percent + "%";
+        fill.style.width = `${percent}%`;
 
         bar.appendChild(fill);
         row.append(label, bar);
@@ -288,20 +334,21 @@ function stopScanner() {
     startBtn.disabled = false;
     stopBtn.disabled = true;
 
-    statusText.textContent = "Scanner stopped.";
     resultText.textContent = "Waiting for a plant...";
     detailsText.textContent =
         "Start the scanner to identify a plant.";
 
     confidenceInfo.textContent =
-        "Start scanning to see confidence scores.";
+        "Confidence scores will appear here.";
 
     predictionsBox.replaceChildren();
+    statusText.textContent = "Scanner stopped.";
 
-    lastSpokenLabel = "";
-    lastSpokenTime = 0;
-    lastStableLabel = "";
+    lastCandidateLabel = "";
     stableFrames = 0;
+
+    // Reset for the next scanning session.
+    lastAnnouncedLabel = "";
 }
 
 startBtn.addEventListener("click", startScanner);
@@ -311,15 +358,15 @@ voiceBtn.addEventListener("click", () => {
     voiceEnabled = !voiceEnabled;
 
     voiceBtn.textContent =
-        "Voice: " + (voiceEnabled ? "ON" : "OFF");
+        `Voice: ${voiceEnabled ? "ON" : "OFF"}`;
 
     if (!voiceEnabled && "speechSynthesis" in window) {
         window.speechSynthesis.cancel();
     }
 
     statusText.textContent = voiceEnabled
-        ? "Voice output enabled."
-        : "Voice output disabled.";
+        ? "Voice enabled. A different qualifying plant will be announced."
+        : "Voice disabled.";
 });
 
 window.addEventListener("pagehide", stopScanner);
