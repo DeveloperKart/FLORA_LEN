@@ -66,8 +66,24 @@ function normaliseLabel(label) {
     return String(label || "").trim().toLowerCase();
 }
 
+
 function getClassInfo(label) {
-    return classInfo[normaliseLabel(label)] || null;
+    const name = normaliseLabel(label)
+        .replace(/\s+/g, " ");
+
+    const aliases = {
+        "tulsi": "tulsi",
+        "bryophyllum pinnatum": "bryophyllum pinnatum",
+        "brophyllum pinnatum": "bryophyllum pinnatum",
+        "aloe vera": "aloe vera",
+        "crabgrass": "crabgrass",
+        "background/noise": "background / noise",
+        "background noise": "background / noise",
+        "background": "background / noise"
+    };
+
+    const key = aliases[name] || name;
+    return classInfo[key] || null;
 }
 
 function resetDetection() {
@@ -107,10 +123,23 @@ function displayResult(label, confidence) {
     detailsText.textContent = info.information;
 }
 
+
 function announceClassName(label) {
     if (!voiceEnabled || !("speechSynthesis" in window)) {
         return;
     }
+
+    const message = `FloraLens has identified it as ${label}.`;
+
+    window.speechSynthesis.cancel();
+
+    const utterance = new SpeechSynthesisUtterance(message);
+    utterance.lang = "en-IN";
+    utterance.rate = 0.9;
+
+    window.speechSynthesis.speak(utterance);
+    lastAnnouncedLabel = label;
+}
 
     const normalised = normaliseLabel(label);
 
